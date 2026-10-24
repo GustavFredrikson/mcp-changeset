@@ -11,6 +11,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, TypeVar, Union
 
+import anyio.to_thread
+
 from .errors import ChangeError, StateChangedError, WritesDisabledError
 from .ledger import ChangeRecord, Ledger, Status, canonical_hash, canonical_json
 
@@ -35,7 +37,9 @@ DEFAULT_MAX_RESULT_BYTES = 64 * 1024
 GUARDED = "guarded"
 DISABLED = "disabled"
 MIN_TTL = 60.0
+"""Default lower bound for ``ttl`` (seconds); override with ``min_ttl``."""
 MAX_TTL = 3600.0
+"""Default upper bound for ``ttl`` (seconds); override with ``max_ttl``."""
 
 T = TypeVar("T")
 MaybeAwaitable = Union[T, Awaitable[T]]  # noqa: UP007 - runtime alias must work on 3.10
@@ -135,8 +139,14 @@ class Guard:
         server: Any object with an ``add_tool(fn, name=, description=,
             annotations=)`` method.
         ledger_path: SQLite ledger file, shared by every process using it.
-        ttl: Seconds a confirmation token stays valid (60 to 3600).
+        ttl: Seconds a confirmation token stays valid, within
+            ``min_ttl``..``max_ttl``.
         undo_ttl: Seconds an undo token stays valid, or ``None`` for no expiry.
+        min_ttl: Smallest allowed ``ttl`` (default 60 s). Must be positive.
+        max_ttl: Largest allowed ``ttl`` (default 3600 s).
+        max_undo_ttl: Optional upper bound for ``undo_ttl``. When set,
+            ``undo_ttl`` must be a number no larger than it (``None`` is
+            rejected).
         write_mode: ``"guarded"``, ``"disabled"`` or ``None`` (use ``env_var``).
         env_var: Environment variable consulted when ``write_mode`` is ``None``.
         scope: Optional identity hashed into each change; see :class:`Ledger`.
@@ -161,6 +171,9 @@ class Guard:
         ledger_path: str | os.PathLike[str],
         ttl: float = 900.0,
         undo_ttl: float | None = 86400.0,
+        min_ttl: float = MIN_TTL,
+        max_ttl: float = MAX_TTL,
+        max_undo_ttl: float | None = None,
         write_mode: str | None = None,
         env_var: str = DEFAULT_ENV_VAR,
         scope: str | None = None,
@@ -172,10 +185,17 @@ class Guard:
         max_clock_skew: float = 60.0,
         clock: Callable[[], float] = time.time,
     ) -> None:
-        if not MIN_TTL <= ttl <= MAX_TTL:
-            raise ValueError(f"ttl must be between {MIN_TTL:.0f} and {MAX_TTL:.0f} seconds")
+        if not 0 < min_ttl <= max_ttl:
+            raise ValueError("ttl bounds must satisfy 0 < min_ttl <= max_ttl")
+        if not min_ttl <= ttl <= max_ttl:
+            raise ValueError(f"ttl must be between {min_ttl:g} and {max_ttl:g} seconds")
         if undo_ttl is not None and undo_ttl <= 0:
             raise ValueError("undo_ttl must be positive or None")
+        if max_undo_ttl is not None:
+            if max_undo_ttl <= 0:
+                raise ValueError("max_undo_ttl must be positive or None")
+            if undo_ttl is None or undo_ttl > max_undo_ttl:
+                raise ValueError(f"undo_ttl must be at most max_undo_ttl ({max_undo_ttl:g} s)")
         if write_mode not in (None, GUARDED, DISABLED):
             raise ValueError(f"write_mode must be {GUARDED!r}, {DISABLED!r} or None")
         if max_payload_bytes <= 0 or max_result_bytes <= 0:
@@ -287,7 +307,7 @@ class Guard:
             return await self.undo(change_id, undo_token)
 
         async def get_change_status(change_id: str) -> dict[str, Any]:
-            return self.status(change_id)
+            return await self._db(self.status, change_id)
 
         self.server.add_tool(
             apply_change,
@@ -322,6 +342,16 @@ class Guard:
 
     # -- the workflow (also callable from trusted Python) ------------------
 
+    async def _db(self, fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
+        """Run a blocking ledger call in a worker thread.
+
+        Not abandoned on cancellation: if the caller is cancelled, the SQLite
+        transaction still runs to completion (commit or rollback) before the
+        cancellation is delivered, so a claim is never half-made. The
+        at-most-once guarantee comes from SQLite's lock, not from the thread.
+        """
+        return await anyio.to_thread.run_sync(functools.partial(fn, *args, **kwargs))
+
     def _op(self, action: str) -> _Operation:
         try:
             return self._ops[action]
@@ -355,7 +385,8 @@ class Guard:
                 f"proposal is {size} bytes; the limit is {self.max_payload_bytes} bytes"
             )
         observed = await self._observe(op, payload)
-        record, token = self.ledger.create(
+        record, token = await self._db(
+            self.ledger.create,
             action=action,
             payload=payload,
             diff=diff,
@@ -389,8 +420,8 @@ class Guard:
         """
         # Checked before the claim so turning writes off never burns a preview.
         self._require_writes()
-        op = self._op(self.ledger.get(change_id).action)
-        record = self.ledger.claim_apply(change_id, confirmation_token)
+        op = self._op((await self._db(self.ledger.get, change_id)).action)
+        record = await self._db(self.ledger.claim_apply, change_id, confirmation_token)
         try:
             if await self._observe(op, record.payload) != record.observed_hash:
                 raise StateChangedError(
@@ -407,26 +438,33 @@ class Guard:
             after = await self._observe(op, record.payload)
         except Exception as exc:
             public = _public(exc, change_id, "apply")
-            self.ledger.fail(change_id, Status.APPLYING, f"{type(exc).__name__}: {exc}", public)
+            await self._db(
+                self.ledger.fail, change_id, Status.APPLYING, f"{type(exc).__name__}: {exc}", public
+            )
             if isinstance(exc, ChangeError):
                 raise
             raise ChangeError(public) from exc
-        undo_token = self.ledger.finish_apply(
-            change_id, result=result, after_hash=after, undo_ttl=self.undo_ttl
+        undo_token = await self._db(
+            self.ledger.finish_apply,
+            change_id,
+            result=result,
+            after_hash=after,
+            undo_ttl=self.undo_ttl,
         )
         out: dict[str, Any] = {"status": "applied", "change_id": change_id, "result": result}
         if undo_token is not None:
             out["undo_token"] = undo_token
-            out["undo_expires_at"] = self.ledger.get(change_id).public()["undo_expires_at"]
+            record = await self._db(self.ledger.get, change_id)
+            out["undo_expires_at"] = record.public()["undo_expires_at"]
         return out
 
     async def undo(self, change_id: str, undo_token: str) -> dict[str, Any]:
         """Compensate for an applied change at most once. Refuses if state changed since."""
         self._require_writes()
-        op = self._op(self.ledger.get(change_id).action)
+        op = self._op((await self._db(self.ledger.get, change_id)).action)
         if op.undo is None:
             raise ChangeError(f"change {change_id} has no undo")
-        record = self.ledger.claim_undo(change_id, undo_token)
+        record = await self._db(self.ledger.claim_undo, change_id, undo_token)
         try:
             if await self._observe(op, record.payload) != record.after_hash:
                 raise StateChangedError(
@@ -435,11 +473,13 @@ class Guard:
             await _call(op.undo, record.payload, record.result)
         except Exception as exc:
             public = _public(exc, change_id, "undo")
-            self.ledger.fail(change_id, Status.UNDOING, f"{type(exc).__name__}: {exc}", public)
+            await self._db(
+                self.ledger.fail, change_id, Status.UNDOING, f"{type(exc).__name__}: {exc}", public
+            )
             if isinstance(exc, ChangeError):
                 raise
             raise ChangeError(public) from exc
-        self.ledger.finish_undo(change_id)
+        await self._db(self.ledger.finish_undo, change_id)
         return {"status": "undone", "change_id": change_id}
 
     def status(self, change_id: str) -> dict[str, Any]:

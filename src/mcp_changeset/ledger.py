@@ -164,6 +164,9 @@ class Ledger:
         clock: Wall-clock source in Unix seconds. Injectable for tests.
         busy_timeout: Seconds to wait for another connection's write lock
             before raising :class:`LedgerError`.
+        create: Create the file and schema if missing (default). With
+            ``create=False`` the file must already be an mcp-changeset ledger
+            of the current schema version; used by the CLI.
         max_clock_skew: A claim is refused when the clock reads more than
             this many seconds *before* the row was created (the clock moved
             backwards, which would otherwise extend a token's life).
@@ -177,13 +180,17 @@ class Ledger:
         clock: Callable[[], float] = time.time,
         busy_timeout: float = 5.0,
         max_clock_skew: float = 60.0,
+        create: bool = True,
     ) -> None:
         self.path = Path(path).expanduser()
         self._scope_hash = _scope_hash(scope)
         self._clock = clock
         self._busy_timeout = busy_timeout
         self._max_clock_skew = max_clock_skew
-        self._init_db()
+        if create:
+            self._init_db()
+        else:
+            self._open_existing()
 
     # -- plumbing ---------------------------------------------------------
 
@@ -212,6 +219,19 @@ class Ledger:
             conn.executescript(_SCHEMA)
             if version == 0:
                 conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+
+    def _open_existing(self) -> None:
+        if self.path.is_symlink():
+            raise LedgerError("ledger path is a symlink; refusing")
+        if not self.path.is_file():
+            raise LedgerError("no ledger file at the given path")
+        with self._connect() as conn:
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            has_table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'changes'"
+            ).fetchone()
+        if version != SCHEMA_VERSION or has_table is None:
+            raise LedgerError("file is not an mcp-changeset ledger of a supported version")
 
     @contextmanager
     def _connect(self) -> Generator[sqlite3.Connection, None, None]:
@@ -456,6 +476,74 @@ class Ledger:
         """``undoing -> undone``."""
         with self._immediate() as conn:
             self._transition(conn, change_id, Status.UNDOING, Status.UNDONE)
+
+    # -- operator actions -------------------------------------------------
+
+    def reconcile(self, change_id: str, note: str) -> ChangeRecord:
+        """Close a change stuck in ``applying`` or ``undoing`` after a crash or cancellation.
+
+        ``applying -> apply_failed`` or ``undoing -> undo_failed``. Call this only
+        after checking the remote state by hand: the ledger cannot know whether
+        the interrupted write happened. ``note`` is recorded for operators. The
+        change is never made retryable; preview again if it still needs doing.
+        """
+        note = note.strip()
+        if not note:
+            raise ValueError("a reconciliation note is required")
+        with self._immediate() as conn:
+            status = Status(self._row(conn, change_id)["status"])
+            if status not in (Status.APPLYING, Status.UNDOING):
+                raise ChangeError(
+                    f"change {change_id} is {status.value}; only applying or undoing "
+                    "changes can be reconciled"
+                )
+            to = Status.APPLY_FAILED if status is Status.APPLYING else Status.UNDO_FAILED
+            self._transition(
+                conn,
+                change_id,
+                status,
+                to,
+                error=f"reconciled by operator: {note}"[:2000],
+                public_error="interrupted; reconciled by the operator",
+            )
+        return self.get(change_id)
+
+    def prune(
+        self, older_than: float, *, include_applied: bool = False, dry_run: bool = False
+    ) -> int:
+        """Delete finished changes last updated more than ``older_than`` seconds ago.
+
+        Always eligible: ``expired``, ``apply_failed``, ``undone``,
+        ``undo_failed``. With ``include_applied=True``, ``applied`` changes are
+        eligible too, but only once they can no longer be undone (no undo, or
+        the undo window has closed); rows with a never-expiring undo window are
+        kept. ``pending``, ``applying`` and ``undoing`` rows are never deleted.
+        Returns the number of deleted rows (with ``dry_run=True``, the number
+        that would be deleted; nothing is changed).
+        """
+        if older_than < 0:
+            raise ValueError("older_than must be >= 0")
+        now = self._clock()
+        cutoff = now - older_than
+        finished = (
+            Status.EXPIRED.value,
+            Status.APPLY_FAILED.value,
+            Status.UNDONE.value,
+            Status.UNDO_FAILED.value,
+        )
+        where = "updated_at < ? AND status IN (?, ?, ?, ?)"
+        params: tuple[Any, ...] = (cutoff, *finished)
+        if include_applied:
+            where = (
+                f"({where}) OR (updated_at < ? AND status = ? AND "
+                "(undoable = 0 OR (undo_expires_at IS NOT NULL AND undo_expires_at <= ?)))"
+            )
+            params += (cutoff, Status.APPLIED.value, now)
+        verb = "SELECT COUNT(*) FROM" if dry_run else "DELETE FROM"
+        with self._immediate() as conn:
+            # `where` is assembled from constants above; values are bound.
+            cur = conn.execute(f"{verb} changes WHERE {where}", params)
+            return int(cur.fetchone()[0]) if dry_run else cur.rowcount
 
     # -- housekeeping -----------------------------------------------------
 
