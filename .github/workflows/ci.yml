@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: py${{ matrix.python }} / ${{ matrix.mcp-label }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13"]
+        mcp-label: ["mcp 1.x", "mcp 2.x"]
+        include:
+          - mcp-label: "mcp 1.x"
+            mcp: "mcp>=1.10,<2"
+          - mcp-label: "mcp 2.x"
+            mcp: "mcp>=2,<3"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Install
+        run: |
+          uv sync --python ${{ matrix.python }}
+          uv pip install "${{ matrix.mcp }}"
+      - name: Ruff
+        run: |
+          uv run --no-sync ruff check .
+          uv run --no-sync ruff format --check .
+      - name: Mypy (strict)
+        run: |
+          if [ "${{ matrix.mcp-label }}" = "mcp 2.x" ]; then
+            uv run --no-sync mypy --python-version ${{ matrix.python }}
+          else
+            # examples/elicit_server.py needs mcp 2.x APIs
+            uv run --no-sync mypy --python-version ${{ matrix.python }} \
+              src examples/_compat.py examples/todo_server.py examples/notes_server.py
+          fi
+      - name: Pyright (strict)
+        run: uv run --no-sync pyright --pythonversion ${{ matrix.python }}
+      - name: Pytest
+        run: uv run --no-sync pytest --cov --cov-report=term-missing --cov-fail-under=90
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv build
+      - run: uvx twine check --strict dist/*
