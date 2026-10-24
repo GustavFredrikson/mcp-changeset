@@ -35,6 +35,9 @@ classifiers = [
     "Typing :: Typed",
 ]
 
+[project.scripts]
+mcp-changeset = "mcp_changeset.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/GustavFredrikson/mcp-changeset"
 Source = "https://github.com/GustavFredrikson/mcp-changeset"
@@ -69,6 +72,7 @@ markers = [
 [tool.coverage.run]
 source = ["mcp_changeset"]
 branch = true
+omit = ["*/mcp_changeset/__main__.py"]
 
 [tool.coverage.report]
 show_missing = true
@@ -96,7 +100,7 @@ select = ["E", "F", "W", "I", "B", "UP", "S", "SIM", "RUF"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["mcp_changeset"]
-known-local-folder = ["_compat", "_procs", "todo_server", "notes_server", "elicit_server", "test_client_session"]
+known-local-folder = ["_compat", "_procs", "todo_server", "notes_server", "elicit_server", "test_client_session", "test_next_features"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "S603", "S608"]
