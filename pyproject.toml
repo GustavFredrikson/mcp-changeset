@@ -1,0 +1,102 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mcp-changeset"
+version = "0.1.0"
+description = "Preview, apply and undo for state-changing MCP tools, with a durable SQLite ledger of single-use, expiring approvals."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Gustav Fredrikson", email = "gustavfredrikson@gmail.com" }]
+requires-python = ">=3.10"
+dependencies = ["mcp>=1.10"]
+keywords = [
+    "mcp",
+    "model-context-protocol",
+    "agents",
+    "llm",
+    "human-in-the-loop",
+    "undo",
+    "audit",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/GustavFredrikson/mcp-changeset"
+Source = "https://github.com/GustavFredrikson/mcp-changeset"
+Issues = "https://github.com/GustavFredrikson/mcp-changeset/issues"
+Changelog = "https://github.com/GustavFredrikson/mcp-changeset/blob/main/CHANGELOG.md"
+Design = "https://gustavfredrikson.se/notes/guarded-mcp-writes/"
+
+[dependency-groups]
+dev = [
+    "anyio>=4",
+    "mypy>=1.11",
+    "pyright>=1.1.380",
+    "pytest>=8",
+    "pytest-cov>=5",
+    "ruff>=0.6",
+    "twine>=5",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mcp_changeset"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "examples", "README.md", "CHANGELOG.md", "SECURITY.md", "CONTRIBUTING.md", "LICENSE"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+    "stdio: spawns the example server as a subprocess over stdio (deselect with -m 'not stdio')",
+]
+
+[tool.coverage.run]
+source = ["mcp_changeset"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+
+[tool.mypy]
+strict = true
+python_version = "3.10"
+mypy_path = ["examples"]
+files = ["src", "examples"]
+
+[tool.pyright]
+include = ["src"]
+pythonVersion = "3.10"
+typeCheckingMode = "strict"
+venvPath = "."
+venv = ".venv"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "SIM", "RUF"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["mcp_changeset"]
+known-local-folder = ["_compat", "_procs", "todo_server", "notes_server", "elicit_server", "test_client_session"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S603", "S608"]
