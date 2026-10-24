@@ -422,3 +422,19 @@ async def test_cancelled_apply_leaves_row_applying(make):
     assert [r.change_id for r in guard.ledger.list_changes(Status.APPLYING)] == [p["change_id"]]
     with pytest.raises(ChangeError, match=r"status: applying"):
         await guard.apply(p["change_id"], p["confirmation_token"])
+
+
+def test_write_mode_is_typed_as_a_literal():
+    import typing
+
+    from mcp_changeset import Guard
+
+    hint = typing.get_type_hints(Guard.__init__)["write_mode"]
+    literal = next(a for a in typing.get_args(hint) if typing.get_origin(a) is typing.Literal)
+    assert set(typing.get_args(literal)) == {"guarded", "disabled"}
+    assert type(None) in typing.get_args(hint)
+
+
+@pytest.mark.parametrize("mode", ["guarded", "disabled", None])
+def test_write_mode_literal_values_are_accepted(make, mode):
+    make(write_mode=mode)

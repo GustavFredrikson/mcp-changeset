@@ -9,7 +9,7 @@ import os
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, TypeVar, Union
+from typing import Any, Literal, TypeVar, Union
 
 import anyio.to_thread
 
@@ -174,7 +174,7 @@ class Guard:
         min_ttl: float = MIN_TTL,
         max_ttl: float = MAX_TTL,
         max_undo_ttl: float | None = None,
-        write_mode: str | None = None,
+        write_mode: Literal["guarded", "disabled"] | None = None,
         env_var: str = DEFAULT_ENV_VAR,
         scope: str | None = None,
         prefix: str = "",

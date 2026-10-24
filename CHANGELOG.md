@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- `Guard(write_mode=...)` is annotated as `Literal["guarded", "disabled"] | None`
+  instead of `str | None`. Runtime behaviour is unchanged.
+
 ## [0.1.0] - 2026-10-24
 
 First release.
