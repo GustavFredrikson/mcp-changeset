@@ -17,6 +17,7 @@ from .ledger import ChangeRecord, Ledger, Status, canonical_hash, canonical_json
 __all__ = [
     "DEFAULT_ENV_VAR",
     "DEFAULT_MAX_PAYLOAD_BYTES",
+    "DEFAULT_MAX_RESULT_BYTES",
     "Guard",
     "Proposal",
     "diff_fields",
@@ -27,6 +28,9 @@ DEFAULT_ENV_VAR = "MCP_CHANGESET_WRITE_MODE"
 
 DEFAULT_MAX_PAYLOAD_BYTES = 64 * 1024
 """Default limit on the UTF-8 size of a proposal's payload + diff + summary."""
+
+DEFAULT_MAX_RESULT_BYTES = 64 * 1024
+"""Default limit on the UTF-8 size of the JSON result an ``apply`` function returns."""
 
 GUARDED = "guarded"
 DISABLED = "disabled"
@@ -140,6 +144,10 @@ class Guard:
         shared_tools: Register the apply/undo/status tools.
         max_payload_bytes: Refuse proposals whose payload, diff and summary
             exceed this many UTF-8 bytes of canonical JSON.
+        max_result_bytes: Limit on the canonical JSON of an ``apply`` result.
+            The write has already happened when this is checked, so an
+            oversized result marks the change ``apply_failed`` (not undoable)
+            and the agent is told the remote state needs review.
         busy_timeout: Seconds to wait for the ledger's write lock.
         max_clock_skew: Seconds the clock may run behind a change's creation
             time before claims are refused.
@@ -159,6 +167,7 @@ class Guard:
         prefix: str = "",
         shared_tools: bool = True,
         max_payload_bytes: int = DEFAULT_MAX_PAYLOAD_BYTES,
+        max_result_bytes: int = DEFAULT_MAX_RESULT_BYTES,
         busy_timeout: float = 5.0,
         max_clock_skew: float = 60.0,
         clock: Callable[[], float] = time.time,
@@ -169,8 +178,8 @@ class Guard:
             raise ValueError("undo_ttl must be positive or None")
         if write_mode not in (None, GUARDED, DISABLED):
             raise ValueError(f"write_mode must be {GUARDED!r}, {DISABLED!r} or None")
-        if max_payload_bytes <= 0:
-            raise ValueError("max_payload_bytes must be positive")
+        if max_payload_bytes <= 0 or max_result_bytes <= 0:
+            raise ValueError("max_payload_bytes and max_result_bytes must be positive")
         self.server = server
         self.ledger = Ledger(
             ledger_path,
@@ -182,6 +191,7 @@ class Guard:
         self.ttl = ttl
         self.undo_ttl = undo_ttl
         self.max_payload_bytes = max_payload_bytes
+        self.max_result_bytes = max_result_bytes
         self._write_mode = write_mode
         self._env_var = env_var
         self._prefix = prefix
@@ -387,6 +397,13 @@ class Guard:
                     f"state changed after preview of {change_id}; create a fresh preview"
                 )
             result = _roundtrip(await _call(op.apply, record.payload))
+            result_size = len(canonical_json(result).encode("utf-8"))
+            if result_size > self.max_result_bytes:
+                raise ChangeError(
+                    f"apply of {change_id} ran, but its result is {result_size} bytes (limit "
+                    f"{self.max_result_bytes}); recorded as apply_failed without undo. The "
+                    f"remote state needs manual review."
+                )
             after = await self._observe(op, record.payload)
         except Exception as exc:
             public = _public(exc, change_id, "apply")

@@ -200,6 +200,8 @@ async def test_payload_limit_counts_utf8_bytes(make):
 def test_payload_limit_must_be_positive(make):
     with pytest.raises(ValueError, match="max_payload_bytes"):
         make(max_payload_bytes=0)
+    with pytest.raises(ValueError, match="max_result_bytes"):
+        make(max_result_bytes=-1)
 
 
 def test_invalid_write_mode(make):
@@ -335,3 +337,88 @@ def test_wal_and_shm_files_inherit_private_mode(tmp_path):
         conn.close()
     finally:
         os.umask(old)
+
+
+async def test_oversized_apply_result_fails_without_undo(make):
+    _, guard = make(max_result_bytes=100)
+    writes: list[int] = []
+
+    def apply(payload):
+        writes.append(1)
+        return {"blob": "x" * 200}
+
+    @guard.guarded(apply=apply, undo=lambda payload, result: None)
+    def op() -> Proposal:
+        return Proposal(payload={})
+
+    p = await guard.preview("op")
+    with pytest.raises(ChangeError, match=r"result is \d+ bytes \(limit 100\)"):
+        await guard.apply(p["change_id"], p["confirmation_token"])
+    assert writes == [1]  # the write happened; the ledger says so
+    status = guard.status(p["change_id"])
+    assert status["status"] == "apply_failed"
+    assert "manual review" in status["error"]
+    assert guard.record(p["change_id"]).result is None
+
+
+async def test_result_at_limit_is_accepted(make):
+    _, guard = make(max_result_bytes=12)
+
+    @guard.guarded(apply=lambda payload: {"a": "12345"})  # {"a":"12345"} is 13 bytes
+    def big() -> Proposal:
+        return Proposal(payload={})
+
+    @guard.guarded(apply=lambda payload: {"a": "1234"})  # 12 bytes
+    def ok() -> Proposal:
+        return Proposal(payload={})
+
+    p = await guard.preview("ok")
+    await guard.apply(p["change_id"], p["confirmation_token"])
+    q = await guard.preview("big")
+    with pytest.raises(ChangeError, match="limit 12"):
+        await guard.apply(q["change_id"], q["confirmation_token"])
+
+
+def test_symlinked_ledger_is_refused(tmp_path):
+    target = tmp_path / "elsewhere.db"
+    target.write_bytes(b"")
+    target.chmod(0o644)
+    link = tmp_path / "ledger.db"
+    link.symlink_to(target)
+    with pytest.raises(LedgerError, match="symlink"):
+        Ledger(link)
+    assert target.stat().st_mode & 0o777 == 0o644  # target untouched
+    assert target.read_bytes() == b""
+
+
+def test_dangling_symlinked_ledger_is_refused(tmp_path):
+    link = tmp_path / "ledger.db"
+    link.symlink_to(tmp_path / "does-not-exist.db")
+    with pytest.raises(LedgerError, match="symlink"):
+        Ledger(link)
+    assert not (tmp_path / "does-not-exist.db").exists()
+
+
+async def test_cancelled_apply_leaves_row_applying(make):
+    _, guard = make()
+    started = asyncio.Event()
+
+    async def slow_apply(payload):
+        started.set()
+        await asyncio.sleep(3600)
+
+    @guard.guarded(apply=slow_apply)
+    def op() -> Proposal:
+        return Proposal(payload={})
+
+    p = await guard.preview("op")
+    task = asyncio.ensure_future(guard.apply(p["change_id"], p["confirmation_token"]))
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    # Unknown outcome: never retried, never reset to pending. A person reconciles it.
+    assert guard.status(p["change_id"])["status"] == "applying"
+    assert [r.change_id for r in guard.ledger.list_changes(Status.APPLYING)] == [p["change_id"]]
+    with pytest.raises(ChangeError, match=r"status: applying"):
+        await guard.apply(p["change_id"], p["confirmation_token"])

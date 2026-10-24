@@ -191,9 +191,16 @@ class Ledger:
         try:
             if not self.path.parent.exists():
                 self.path.parent.mkdir(parents=True, mode=0o700)
-            if not self.path.exists():
-                fd = os.open(self.path, os.O_CREAT | os.O_WRONLY, 0o600)
+            if self.path.is_symlink():
+                raise LedgerError("ledger path is a symlink; refusing")
+            nofollow = getattr(os, "O_NOFOLLOW", 0)
+            try:
+                # O_EXCL | O_NOFOLLOW: never create through, or follow, a symlink.
+                fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | nofollow, 0o600)
                 os.close(fd)
+            except FileExistsError:
+                if self.path.is_symlink():  # e.g. a dangling symlink planted at the path
+                    raise LedgerError("ledger path is a symlink; refusing") from None
             os.chmod(self.path, 0o600)
         except OSError as exc:
             raise LedgerError(f"ledger file cannot be created ({type(exc).__name__})") from exc
