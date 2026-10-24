@@ -6,33 +6,6 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-### Added
-
-- `mcp-changeset` command-line tool (also `python -m mcp_changeset`) for
-  operators: `list`, `show`, `reconcile` and `prune` on an existing ledger.
-  Changing commands require `--yes`; tokens are never printed.
-- `Ledger.reconcile(change_id, note)`: move a change stuck in `applying` to
-  `apply_failed` (or `undoing` to `undo_failed`) after manual review, recording
-  the operator's note.
-- `Ledger.prune(older_than, include_applied=False, dry_run=False)`: age-based
-  retention for terminal rows. Never deletes `pending`, `applying` or
-  `undoing` rows, nor `applied` rows that can still be undone.
-- `Ledger(path, create=False)` opens an existing ledger only, refusing missing
-  files and files that are not an mcp-changeset ledger.
-- Configurable TTL bounds: `Guard(min_ttl=60, max_ttl=3600, max_undo_ttl=None)`.
-- `examples/github_labels_server.py`: guarded label changes on GitHub issues,
-  tested against a fake API with network access blocked.
-- `docs/recipes.md`: multi-tenant scope, elicitation, auditing with
-  `list_changes`, operating a ledger. Its code blocks run in the test suite.
-- A state-machine diagram (mermaid) in the README.
-
-### Changed
-
-- Ledger transactions from `preview`, `apply`, `undo` and the
-  `get_change_status` tool run in a worker thread (`anyio.to_thread`) instead of
-  blocking the event loop. Transactions are never abandoned mid-way, so the
-  at-most-once claim is unchanged.
-
 ## [0.1.0] - 2026-10-24
 
 First release.
@@ -59,6 +32,38 @@ First release.
   corrupt or unreadable ledgers; sanitized errors for agents.
 - Examples: file-backed notes server, todo server, and composition with the
   SDK's MRTR elicitation (mcp 2.x).
+- `mcp-changeset` command-line tool (also `python -m mcp_changeset`) for
+  operators: `list`, `show`, `reconcile` and `prune` on an existing ledger.
+  Changing commands require `--yes`; tokens are never printed.
+- `Ledger.reconcile(change_id, note)`: move a change stuck in `applying` to
+  `apply_failed` (or `undoing` to `undo_failed`) after manual review, recording
+  the operator's note.
+- `Ledger.prune(older_than, include_applied=False, dry_run=False)`: age-based
+  retention for terminal rows. Never deletes `pending`, `applying` or
+  `undoing` rows, nor `applied` rows that can still be undone.
+- `Ledger(path, create=False)` opens an existing ledger only, refusing missing
+  files and files that are not an mcp-changeset ledger.
+- Configurable TTL bounds: `Guard(min_ttl=60, max_ttl=3600, max_undo_ttl=None)`.
+- `examples/github_labels_server.py`: guarded label changes on GitHub issues,
+  tested against a fake API with network access blocked.
+- `docs/recipes.md`: multi-tenant scope, elicitation, auditing with
+  `list_changes`, operating a ledger. Its code blocks run in the test suite.
+- A state-machine diagram (mermaid) in the README.
+- Ledger transactions from `preview`, `apply`, `undo` and the
+  `get_change_status` tool run in a worker thread (`anyio.to_thread`), not on
+  the event loop. Transactions are never abandoned mid-way, so the
+  at-most-once claim holds.
+- `mcp-changeset expire [--yes]`: mark every pending change past its TTL as
+  `expired`, so `prune` can delete stale previews.
+- Examples: `tickets_server.py` (SQLite, compare-and-set writes on a row
+  version), `client_demo.py` (an MCP client over stdio, also a CI smoke test)
+  and a Claude Desktop configuration, with tests.
+- `docs/security-model.md`: token format and hashing, the single-use claim,
+  claim-time checks, state binding and what each ledger column stores.
+- Release workflow for PyPI Trusted Publishing (`.github/workflows/release.yml`,
+  environment `pypi`, no API token); `workflow_dispatch` runs it as a dry run.
+- CI: 95% coverage gate, the stdio client demo, an install of the built wheel
+  with a CLI run, and actionlint on the workflows.
 
 [Unreleased]: https://github.com/GustavFredrikson/mcp-changeset/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/GustavFredrikson/mcp-changeset/releases/tag/v0.1.0

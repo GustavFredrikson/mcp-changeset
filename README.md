@@ -45,9 +45,19 @@ needing at-most-once must enforce it themselves.
 
 ## 30-second quickstart
 
+See it work: a real MCP client talks to the example notes server over stdio
+and walks through preview → apply → replay (refused) → undo, in a temporary
+directory. Needs [uv](https://docs.astral.sh/uv/).
+
 ```console
-$ pip install mcp-changeset   # not yet on PyPI; for now: pip install -e .
-$ MCP_CHANGESET_WRITE_MODE=guarded python examples/notes_server.py
+$ git clone https://github.com/GustavFredrikson/mcp-changeset && cd mcp-changeset
+$ uv run examples/client_demo.py
+```
+
+Use it in your own server:
+
+```console
+$ pip install mcp-changeset   # not on PyPI yet; for now: pip install -e .
 ```
 
 ```python
@@ -106,8 +116,11 @@ What the agent sees:
 // error: "change chg_… cannot be applied (status: applied)"
 ```
 
-Examples (all exercised by the test suite):
+Examples (all exercised by the test suite; overview in
+[`examples/README.md`](https://github.com/GustavFredrikson/mcp-changeset/blob/main/examples/README.md)):
 
+* [`examples/client_demo.py`](https://github.com/GustavFredrikson/mcp-changeset/blob/main/examples/client_demo.py): an MCP client
+  driving the notes server over stdio; run in CI as a smoke test.
 * [`examples/notes_server.py`](https://github.com/GustavFredrikson/mcp-changeset/blob/main/examples/notes_server.py): notes stored as files;
   guarded write and delete bound to the file's content hash, with undo, name
   validation and symlink refusal.
@@ -120,6 +133,12 @@ Examples (all exercised by the test suite):
   operator allowlist of repositories, only existing labels, state bound to the
   issue's current labels, undo restores the previous set). The tests use a fake
   GitHub and block all network access.
+* [`examples/tickets_server.py`](https://github.com/GustavFredrikson/mcp-changeset/blob/main/examples/tickets_server.py): a SQLite
+  ticket tracker whose `apply` and `undo` are compare-and-set on a row
+  version, closing the window between `observe` and the write.
+* [`examples/clients/claude_desktop_config.json`](https://github.com/GustavFredrikson/mcp-changeset/blob/main/examples/clients/claude_desktop_config.json):
+  the notes and tickets servers in Claude Desktop (setup steps in
+  [`examples/README.md`](https://github.com/GustavFredrikson/mcp-changeset/blob/main/examples/README.md#use-the-servers-from-claude-desktop)).
 
 More patterns (multi-tenant scope, elicitation, auditing, operating a ledger)
 are in [Recipes](https://github.com/GustavFredrikson/mcp-changeset/blob/main/docs/recipes.md).
@@ -174,6 +193,32 @@ the message to a person. That is the trust model of elicitation itself.
 
 The full reasoning is in the design note
 [Guarding state-changing MCP tools with preview, apply, and undo](https://gustavfredrikson.se/notes/guarded-mcp-writes/).
+
+The flow, from the agent's side:
+
+```
+ agent                         server + Guard                      ledger
+   │  preview_<op>(args)            │                                 │
+   │───────────────────────────────▶│ validate, observe(payload)      │
+   │                                │────────────────────────────────▶│ pending row:
+   │  diff, change_id,              │                                 │ payload, hashes
+   │  confirmation_token (once)     │                                 │
+   │◀───────────────────────────────│                                 │
+   │                                │                                 │
+   │   … a person approves the diff (see "Composing" above) …         │
+   │                                │                                 │
+   │  apply_change(id, token)       │                                 │
+   │───────────────────────────────▶│ claim: pending → applying       │
+   │                                │────────────────────────────────▶│ (committed first)
+   │                                │ re-observe, apply(stored payload)
+   │  result, undo_token (once)     │ applying → applied              │
+   │◀───────────────────────────────│────────────────────────────────▶│
+   │                                │                                 │
+   │  undo_change(id, undo_token)   │ claim: applied → undoing,       │
+   │───────────────────────────────▶│ check state unchanged, undo()   │
+   │  undone                        │ undoing → undone                │
+   │◀───────────────────────────────│────────────────────────────────▶│
+```
 
 Each change is one row in a SQLite ledger. Every transition is a conditional
 `UPDATE … WHERE status = ?`, and nothing returns to `pending`:
@@ -252,6 +297,10 @@ stateDiagram-v2
   `ToolError`, so their messages reach the agent. Any other exception raised
   by your `apply`/`undo` is reduced to its type name for the agent; the full
   text is stored in the ledger for operators (`guard.record(id).error`).
+
+The mechanisms (token format and hashing, the claim transaction, what each
+ledger column holds) are written up with diagrams in
+[docs/security-model.md](https://github.com/GustavFredrikson/mcp-changeset/blob/main/docs/security-model.md).
 
 ## Threat model and non-goals
 
@@ -345,9 +394,10 @@ $ mcp-changeset list [--status applying] [--json]
 $ mcp-changeset show CHANGE_ID [--json]
 $ mcp-changeset reconcile CHANGE_ID --note "what you checked" [--yes]
 $ mcp-changeset prune --older-than-days 30 [--include-applied] [--yes]
+$ mcp-changeset expire [--yes]
 ```
 
-`reconcile` and `prune` only report what they would do unless `--yes` is
+`reconcile`, `prune` and `expire` only report what they would do unless `--yes` is
 given (exit status 2). Exit status 1 means an error, such as an unknown change
 or a ledger that is busy or not an mcp-changeset ledger.
 
@@ -355,7 +405,9 @@ or a ledger that is busy or not an mcp-changeset ledger.
 keeps every row until pruned. `prune` deletes `expired`, `apply_failed`,
 `undone` and `undo_failed` rows last updated before the cut-off; with
 `--include-applied`, also `applied` rows that can no longer be undone. It never
-deletes `pending`, `applying` or `undoing` rows. Schedule it (cron, systemd
+deletes `pending`, `applying` or `undoing` rows; a stale preview stays
+`pending` until someone tries to apply it, so run `expire --yes` first to turn
+every pending row past its TTL into `expired` and make it prunable. Schedule it (cron, systemd
 timer) if the server runs for long.
 
 ## Roadmap

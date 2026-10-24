@@ -20,6 +20,8 @@ $ uv run ruff format --check .
 $ uv run mypy                      # strict; src/ and examples/
 $ uv run pyright                   # strict; src/
 $ uv run pytest --cov              # add -m 'not stdio' to skip the subprocess test
+$ uv run examples/client_demo.py   # end-to-end smoke run over stdio
+$ actionlint                       # if you changed .github/workflows (github.com/rhysd/actionlint)
 ```
 
 To test against mcp 1.x: `uv pip install "mcp>=1.10,<2"` and re-run pytest
