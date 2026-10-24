@@ -60,7 +60,7 @@ dev = [
 packages = ["src/mcp_changeset"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src", "tests", "examples", "README.md", "CHANGELOG.md", "SECURITY.md", "CONTRIBUTING.md", "LICENSE"]
+include = ["src", "tests", "examples", "docs", "README.md", "CHANGELOG.md", "SECURITY.md", "CONTRIBUTING.md", "LICENSE"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -100,7 +100,7 @@ select = ["E", "F", "W", "I", "B", "UP", "S", "SIM", "RUF"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["mcp_changeset"]
-known-local-folder = ["_compat", "_procs", "todo_server", "notes_server", "elicit_server", "test_client_session", "test_next_features"]
+known-local-folder = ["_compat", "_procs", "todo_server", "notes_server", "elicit_server", "github_labels_server", "test_client_session", "test_next_features"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101", "S603", "S608"]
+"tests/**" = ["S101", "S105", "S603", "S608"]
