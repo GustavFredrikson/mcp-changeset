@@ -41,12 +41,14 @@ jobs:
             # examples/elicit_server.py needs mcp 2.x APIs
             uv run --no-sync mypy --python-version ${{ matrix.python }} \
               src examples/_compat.py examples/todo_server.py examples/notes_server.py \
-              examples/github_labels_server.py
+              examples/github_labels_server.py examples/tickets_server.py examples/client_demo.py
           fi
       - name: Pyright (strict)
         run: uv run --no-sync pyright --pythonversion ${{ matrix.python }}
       - name: Pytest
-        run: uv run --no-sync pytest --cov --cov-report=term-missing --cov-fail-under=90
+        run: uv run --no-sync pytest --cov --cov-report=term-missing --cov-fail-under=95
+      - name: Example smoke run (stdio client -> notes server)
+        run: uv run --no-sync python examples/client_demo.py
 
   build:
     runs-on: ubuntu-latest
@@ -55,3 +57,18 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - run: uv build
       - run: uvx twine check --strict dist/*
+      - name: Install the wheel in a clean venv and run the CLI
+        run: |
+          uv venv /tmp/smoke
+          uv pip install --python /tmp/smoke/bin/python dist/*.whl
+          /tmp/smoke/bin/mcp-changeset --help
+          /tmp/smoke/bin/python -m mcp_changeset --version
+
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint workflow files
+        run: |
+          bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12
+          ./actionlint -color
