@@ -33,7 +33,7 @@ needing at-most-once must enforce it themselves.
 | --- | --- | --- |
 | Asks the **user** (not the model) | ✅ via elicitation | ❌ token goes to the agent; combine with MRTR for this |
 | Approval bound to the call's arguments | ✅ argument digest | ✅ apply takes no data; runs the stored payload |
-| Expiry | ✅ (default 10 min) | ✅ (default 15 min, 1–60 min) |
+| Expiry | ✅ (default 10 min) | ✅ (default 15 min, bounds configurable) |
 | Single use / at-most-once execution | ❌ by design, left to servers | ✅ SQLite claim before any write |
 | Survives restarts / shared across processes | only with shared keys; nothing is recorded | ✅ one ledger file |
 | Re-checks the target's state before writing | ❌ (only the tool can) | ✅ optional `observe` hook, also before undo |
@@ -115,6 +115,14 @@ Examples (all exercised by the test suite):
   create, update and delete.
 * [`examples/elicit_server.py`](https://github.com/GustavFredrikson/mcp-changeset/blob/main/examples/elicit_server.py): the MRTR
   composition below (mcp 2.x).
+* [`examples/github_labels_server.py`](https://github.com/GustavFredrikson/mcp-changeset/blob/main/examples/github_labels_server.py):
+  add/remove labels on GitHub issues through the REST API (stdlib `urllib`,
+  operator allowlist of repositories, only existing labels, state bound to the
+  issue's current labels, undo restores the previous set). The tests use a fake
+  GitHub and block all network access.
+
+More patterns (multi-tenant scope, elicitation, auditing, operating a ledger)
+are in [Recipes](https://github.com/GustavFredrikson/mcp-changeset/blob/main/docs/recipes.md).
 
 ## Composing with the SDK's confirmation flow
 
@@ -170,23 +178,24 @@ The full reasoning is in the design note
 Each change is one row in a SQLite ledger. Every transition is a conditional
 `UPDATE … WHERE status = ?`, and nothing returns to `pending`:
 
-```
- preview_<op>
-      │
-      ▼
-   pending ──(TTL passed)──────────────▶ expired
-      │ valid token, claimed
-      ▼
-   applying ──(state changed / error)──▶ apply_failed
-      │
-      ▼
-   applied
-      │ valid undo token
-      ▼
-   undoing ──(state changed / error)───▶ undo_failed
-      │
-      ▼
-   undone
+```mermaid
+stateDiagram-v2
+    direction TB
+    [*] --> pending: preview_op
+    pending --> expired: TTL passed
+    pending --> applying: valid confirmation token (claim commits first)
+    applying --> applied: apply succeeded
+    applying --> apply_failed: state changed / apply raised / result too large
+    applying --> apply_failed: operator reconcile (process died mid-apply)
+    applied --> undoing: valid undo token, within undo_ttl
+    undoing --> undone: undo succeeded
+    undoing --> undo_failed: state changed / undo raised
+    undoing --> undo_failed: operator reconcile
+    expired --> [*]: prune
+    apply_failed --> [*]: prune
+    undone --> [*]: prune
+    undo_failed --> [*]: prune
+    applied --> [*]: prune with include_applied, once no longer undoable
 ```
 
 * **At-most-once.** `pending → applying` runs in `BEGIN IMMEDIATE` (SQLite's
@@ -196,8 +205,17 @@ Each change is one row in a SQLite ledger. Every transition is a conditional
   or the apply is cancelled (task cancellation, client disconnect), the row
   stays `applying` and needs manual reconciliation: nothing retries a write
   that may already have happened, and nothing resets it to `pending`. Find
-  such rows with `guard.ledger.list_changes(Status.APPLYING)`. This is
-  at-most-once, not exactly-once.
+  such rows with `mcp-changeset list --status applying` and, after checking
+  the remote system, close them with `mcp-changeset reconcile ID --note … --yes`
+  (`applying → apply_failed`, `undoing → undo_failed`). This is at-most-once,
+  not exactly-once.
+* **Off the event loop.** Every ledger transaction runs in a worker thread
+  (`anyio.to_thread.run_sync`), so a lock wait of up to `busy_timeout` never
+  blocks other requests. The thread is not abandoned on cancellation: a
+  transaction that has started always commits or rolls back before the
+  cancellation is delivered, so a claim is never half-done. A cancellation
+  between the apply and the bookkeeping that follows leaves the row in
+  `applying` (see above) and the agent never sees an undo token.
 * **Local disk only.** The ledger relies on SQLite WAL mode and
   `BEGIN IMMEDIATE`, which are not safe on network filesystems (NFS,
   SMB/CIFS). Processes sharing a ledger must be on the same host.
@@ -213,6 +231,9 @@ Each change is one row in a SQLite ledger. Every transition is a conditional
 * **Write mode.** `apply`/`undo` refuse unless `write_mode="guarded"` or the
   env var is `guarded`. This is checked before the claim, so turning writes off
   never burns a pending preview. Previews keep working.
+* **Expiry bounds.** `ttl` must lie within `min_ttl`–`max_ttl` (default
+  60 s–1 h). `max_undo_ttl` optionally caps `undo_ttl` (and forbids
+  `undo_ttl=None`), for deployments that want a hard policy.
 * **Undo expiry (deviation from the note).** The note's undo tokens never
   expire. Here they expire after `undo_ttl` (default 24 h). An undo token is a
   live capability for a second write, and the longer it lives the more likely
@@ -223,7 +244,7 @@ Each change is one row in a SQLite ledger. Every transition is a conditional
   canonical JSON across payload, diff and summary) are refused. `apply`
   results above `max_result_bytes` (default 64 KiB) mark the change
   `apply_failed` without undo, since the write has already happened. These
-  cap single rows; the number of rows is unbounded (no retention yet). Payloads must
+  cap single rows; the number of rows grows until you prune (below). Payloads must
   be plain JSON: no NaN/Infinity, no lone surrogates. A clock that reads more
   than `max_clock_skew` (60 s) before a row's creation time refuses claims
   rather than extending a token's life.
@@ -279,7 +300,8 @@ against state that changed in between. It does **not**:
 ## Python API
 
 ```python
-Guard(server, *, ledger_path, ttl=900, undo_ttl=86400, write_mode=None,
+Guard(server, *, ledger_path, ttl=900, undo_ttl=86400, min_ttl=60, max_ttl=3600,
+      max_undo_ttl=None, write_mode=None,
       env_var="MCP_CHANGESET_WRITE_MODE", scope=None, prefix="", shared_tools=True,
       max_payload_bytes=65536, max_result_bytes=65536, busy_timeout=5.0,
       max_clock_skew=60.0, clock=time.time)
@@ -298,31 +320,55 @@ guard.record(change_id)                   # ChangeRecord for trusted code, no to
 guard.writes_enabled
 guard.ledger.list_changes(Status.APPLYING)  # e.g. find rows stuck mid-apply
 guard.ledger.expire_stale()
+guard.ledger.reconcile(change_id, note)     # applying/undoing -> *_failed
+guard.ledger.prune(older_than_seconds, include_applied=False, dry_run=False)
+Ledger(path, create=False)                  # open an existing ledger (operators)
 ```
 
 Errors: `ChangeError` (base) → `WritesDisabledError`, `StateChangedError`,
 `LedgerError` (busy, corrupt, unreadable or unsupported ledger). Invalid
 configuration raises `ValueError`.
 
-Ledger calls are synchronous SQLite on the event loop (see the roadmap).
+Ledger calls from the async API run in worker threads; `status`, `record`
+and the `Ledger` methods are synchronous.
 `scope=` (for example an account id) is hashed into each row and claims under a
 different scope are refused.
 
+## Operator CLI
+
+`mcp-changeset` inspects and maintains an existing ledger (it never creates
+one, and never prints tokens). The ledger path comes from `--ledger` or
+`MCP_CHANGESET_LEDGER`.
+
+```console
+$ mcp-changeset list [--status applying] [--json]
+$ mcp-changeset show CHANGE_ID [--json]
+$ mcp-changeset reconcile CHANGE_ID --note "what you checked" [--yes]
+$ mcp-changeset prune --older-than-days 30 [--include-applied] [--yes]
+```
+
+`reconcile` and `prune` only report what they would do unless `--yes` is
+given (exit status 2). Exit status 1 means an error, such as an unknown change
+or a ledger that is busy or not an mcp-changeset ledger.
+
+**Retention.** Payloads and results are stored in clear text and the ledger
+keeps every row until pruned. `prune` deletes `expired`, `apply_failed`,
+`undone` and `undo_failed` rows last updated before the cut-off; with
+`--include-applied`, also `applied` rows that can no longer be undone. It never
+deletes `pending`, `applying` or `undoing` rows. Schedule it (cron, systemd
+timer) if the server runs for long.
+
 ## Roadmap
 
-Ideas for v0.2, none of them committed to:
+Ideas, none of them committed to:
 
 * **Approval via the user, built in.** A helper that registers the
-  elicitation-backed `apply_change` above, so the token can stay server-side.
-* **Ledger I/O in a worker thread** (`anyio.to_thread`) so lock waits never
-  block the event loop.
-* **An operator CLI** to list changes, inspect rows stuck in `applying` and
-  mark them `apply_failed` after manual reconciliation.
-* **Configurable TTL bounds** instead of the fixed 1–60 min range, and an
-  optional maximum for `undo_ttl`.
-* **Retention**: the ledger's row count is currently unbounded. Add
-  age/count-based pruning of terminal rows (`expired`, `applied`, `undone`,
-  failed), since payloads and results are stored in clear text.
+  elicitation-backed `apply_change` from the composition above, so the token
+  can stay server-side.
+* **Count-based retention** (keep the newest N rows) next to the age-based
+  `prune`.
+* **Optional payload redaction** in the ledger for fields operators should not
+  be able to read.
 
 ## Development
 

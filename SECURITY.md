@@ -43,7 +43,7 @@ injection), not an access-control system.
 | Agent gets diff A approved, then executes B | `apply_change` takes no change data; the stored payload runs | `test_apply_tool_takes_no_change_data`, `test_apply_runs_the_stored_normalized_payload` |
 | Same approval used twice (retry, replay, race) | `BEGIN IMMEDIATE` claim, status never returns to `pending` | `test_token_is_single_use`, `test_concurrent_apply_runs_once`, `test_processes_racing_apply_exactly_one_wins`, `test_replay_after_restart` |
 | Approval used for a different change | token hash covers the change id | `test_token_of_one_change_does_not_apply_another` |
-| Old approval used much later | TTL (1–60 min); clock moving backwards refuses claims | `test_token_expires`, `test_clock_moving_backwards_is_refused_without_burning` |
+| Old approval used much later | TTL (default bounds 1–60 min, configurable); clock moving backwards refuses claims | `test_token_expires`, `test_clock_moving_backwards_is_refused_without_burning` |
 | Target changed between preview and apply | optional `observe` hash, fail closed | `test_state_changed_after_preview_fails_closed`, `test_external_edit_invalidates_approval` |
 | Undo overwrites someone's later edit | post-apply snapshot checked before undo | `test_undo_refuses_to_overwrite_later_edit` |
 | Payload edited in the ledger | payload hash + token bound to it | `test_tampered_payload_is_refused`, `test_tampered_payload_and_hash_invalidates_token` |
@@ -51,7 +51,7 @@ injection), not an access-control system.
 | Change previewed for account A applied as B | optional `scope` hash | `test_scope_mismatch_is_refused` |
 | Tokens leaking from storage or status | only SHA-256 stored; status never includes tokens | `test_tokens_are_not_stored_or_exposed` |
 | Internal error text leaking to the agent | non-`ChangeError` exceptions reduced to type name | `test_failed_apply_consumes_token`, `test_undo_failure_is_recorded` |
-| One oversized proposal or apply result | `max_payload_bytes` / `max_result_bytes` (64 KiB each) cap a single row; they do **not** bound the ledger, whose row count is unbounded (see Retention) | `test_default_payload_limit`, `test_oversized_apply_result_fails_without_undo` |
+| One oversized proposal or apply result | `max_payload_bytes` / `max_result_bytes` (64 KiB each) cap a single row; they do **not** bound the ledger, whose row count grows until pruned (see Retention) | `test_default_payload_limit`, `test_oversized_apply_result_fails_without_undo` |
 
 ### Review notes
 
@@ -108,6 +108,10 @@ injection), not an access-control system.
 * **Clocks.** Expiry uses the wall clock (`time.time()`), because the ledger
   is shared across processes. Claims are refused if the clock runs more than
   `max_clock_skew` behind a row's creation; forward jumps expire tokens early.
-* **Retention.** Rows are never deleted automatically, so the ledger grows
-  without bound and keeps payloads and results in clear text. Retention and
-  pruning are on the roadmap (README).
+* **Retention.** Rows are never deleted automatically, so the ledger keeps
+  payloads and results in clear text until you run `mcp-changeset prune` (or
+  `Ledger.prune`). Schedule it if that matters for your data.
+* **Operator CLI.** `mcp-changeset` needs read/write access to the ledger file
+  and is as privileged as the server. It shows payloads, results and stored
+  error text but never tokens (only their hashes are stored), and it changes
+  nothing without `--yes`. `reconcile` records the operator's note.
