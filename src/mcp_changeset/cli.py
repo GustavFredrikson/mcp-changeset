@@ -4,6 +4,7 @@
     mcp-changeset --ledger PATH show CHANGE_ID [--json]
     mcp-changeset --ledger PATH reconcile CHANGE_ID --note "checked remote: not written" --yes
     mcp-changeset --ledger PATH prune --older-than-days 30 [--include-applied] --yes
+    mcp-changeset --ledger PATH expire --yes
 
 Commands that change the ledger do nothing without ``--yes``; they print what
 they would do and exit with status 2. The CLI never creates a ledger and never
@@ -16,6 +17,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from typing import Any, TextIO, cast
@@ -85,6 +87,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="also delete applied changes whose undo window has closed",
     )
     prune.add_argument("--yes", action="store_true", help="actually delete")
+
+    expire = sub.add_parser(
+        "expire",
+        help="mark pending changes past their TTL as expired (so prune can delete them)",
+    )
+    expire.add_argument("--yes", action="store_true", help="actually change the ledger")
     return parser
 
 
@@ -146,6 +154,16 @@ def main(argv: Sequence[str] | None = None, *, out: TextIO | None = None) -> int
                 return EXIT_NEEDS_CONFIRMATION
             done = ledger.reconcile(record.change_id, args.note)
             out.write(f"{done.change_id}: {record.status.value} -> {done.status.value}\n")
+            return EXIT_OK
+        if args.command == "expire":
+            # Pending rows are never pruned, and a stale one only turns expired
+            # when someone tries to apply it. This sweeps them all.
+            if not args.yes:
+                now = time.time()
+                count = sum(1 for r in ledger.list_changes(Status.PENDING) if r.expires_at <= now)
+                out.write(f"would expire {count} change(s); re-run with --yes to expire.\n")
+                return EXIT_NEEDS_CONFIRMATION
+            out.write(f"expired {ledger.expire_stale()} change(s).\n")
             return EXIT_OK
         # prune
         seconds = args.older_than_days * 86400

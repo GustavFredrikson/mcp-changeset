@@ -103,6 +103,21 @@ async def test_prune_requires_yes(populated, clock):
     assert {r.status for r in guard.ledger.list_changes()} == {Status.APPLIED, Status.APPLYING}
 
 
+async def test_expire_requires_yes_and_unblocks_prune(populated):
+    guard, pending = populated["guard"], populated["pending"]["change_id"]
+    # The pending preview was made ~100 days ago (real clock) with a 15 min TTL.
+    code, text = run("--ledger", populated["ledger"], "prune", "--older-than-days", "30")
+    assert code == 2 and "would delete 0 change(s)" in text  # pending rows are never pruned
+    code, text = run("--ledger", populated["ledger"], "expire")
+    assert code == 2 and "would expire 1 change(s)" in text
+    assert guard.status(pending)["status"] == "pending"
+    code, text = run("--ledger", populated["ledger"], "expire", "--yes")
+    assert code == 0 and "expired 1 change(s)" in text
+    assert guard.status(pending)["status"] == "expired"
+    code, text = run("--ledger", populated["ledger"], "expire")
+    assert code == 2 and "would expire 0 change(s)" in text
+
+
 def test_errors(tmp_path, capsys, monkeypatch):
     monkeypatch.delenv("MCP_CHANGESET_LEDGER", raising=False)
     with pytest.raises(SystemExit) as info:
