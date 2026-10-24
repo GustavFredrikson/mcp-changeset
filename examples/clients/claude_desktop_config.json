@@ -1,0 +1,30 @@
+{
+  "mcpServers": {
+    "changeset-notes": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/ABSOLUTE/PATH/TO/mcp-changeset",
+        "run",
+        "examples/notes_server.py"
+      ],
+      "env": {
+        "NOTES_DIR": "/ABSOLUTE/PATH/TO/notes",
+        "MCP_CHANGESET_WRITE_MODE": "guarded"
+      }
+    },
+    "changeset-tickets": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/ABSOLUTE/PATH/TO/mcp-changeset",
+        "run",
+        "examples/tickets_server.py"
+      ],
+      "env": {
+        "TICKETS_DB": "/ABSOLUTE/PATH/TO/tickets.db",
+        "MCP_CHANGESET_WRITE_MODE": "guarded"
+      }
+    }
+  }
+}
