@@ -6,7 +6,7 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-## [0.1.0] - unreleased
+## [0.1.0] - 2026-10-24
 
 First release.
 
@@ -26,8 +26,9 @@ First release.
 - Optional `observe` hook binding approval to observed state at apply and undo.
 - Writes disabled unless `MCP_CHANGESET_WRITE_MODE=guarded` (or
   `write_mode="guarded"`).
-- Optional `scope` binding; `0600` ledger file; `max_payload_bytes` limit
-  (64 KiB); refusal on large backward clock jumps; `LedgerError` for busy,
+- Optional `scope` binding; `0600` ledger file created with `O_NOFOLLOW`
+  (symlinks refused); `max_payload_bytes` and `max_result_bytes` limits
+  (64 KiB each); refusal on large backward clock jumps; `LedgerError` for busy,
   corrupt or unreadable ledgers; sanitized errors for agents.
 - Examples: file-backed notes server, todo server, and composition with the
   SDK's MRTR elicitation (mcp 2.x).

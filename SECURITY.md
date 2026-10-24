@@ -5,9 +5,8 @@
 Please report vulnerabilities privately through GitHub's
 **[private vulnerability reporting](https://docs.github.com/en/code-security/security-advisories/guidance-on-reporting-and-writing-information-about-vulnerabilities/privately-reporting-a-security-vulnerability)**:
 open the repository's **Security** tab and choose **Report a vulnerability**.
-Do not open a public issue for security problems.
-
-Contact: `<SECURITY CONTACT: to be filled in before publishing>`
+Do not open a public issue for security problems. Private vulnerability
+reporting is the only channel for security reports.
 
 Only the latest release is supported. You can expect an acknowledgement
 within a week; this is a personal project maintained on a best-effort basis.
@@ -52,7 +51,7 @@ injection), not an access-control system.
 | Change previewed for account A applied as B | optional `scope` hash | `test_scope_mismatch_is_refused` |
 | Tokens leaking from storage or status | only SHA-256 stored; status never includes tokens | `test_tokens_are_not_stored_or_exposed` |
 | Internal error text leaking to the agent | non-`ChangeError` exceptions reduced to type name | `test_failed_apply_consumes_token`, `test_undo_failure_is_recorded` |
-| Oversized proposals filling the ledger | `max_payload_bytes` (64 KiB default) | `test_default_payload_limit` |
+| One oversized proposal or apply result | `max_payload_bytes` / `max_result_bytes` (64 KiB each) cap a single row; they do **not** bound the ledger, whose row count is unbounded (see Retention) | `test_default_payload_limit`, `test_oversized_apply_result_fails_without_undo` |
 
 ### Review notes
 
@@ -65,7 +64,8 @@ injection), not an access-control system.
 * **Payload binding:** payloads are normalized through canonical JSON (sorted
   keys, no whitespace, no NaN) and hashed with SHA-256; the hash is checked
   again at claim time.
-* **Files:** the ledger file is created and re-chmodded `0600`; a missing
+* **Files:** the ledger file is created with `O_CREAT | O_EXCL | O_NOFOLLOW`
+  and re-chmodded `0600`; a symlink at the ledger path is refused; a missing
   parent directory is created `0700`. An existing parent directory's mode is
   not changed. SQLite's `-wal`/`-shm` files inherit the database file's mode.
 * **What is returned:** previews return the confirmation token once; apply
@@ -95,9 +95,19 @@ injection), not an access-control system.
   read and the write; it does not close it unless `apply` writes
   conditionally. Only what `observe` returns is bound.
 * **Ambiguous outcomes.** `apply_failed` does not always mean nothing changed.
-  Rows stuck in `applying` after a crash need manual reconciliation.
+  If `apply` is cancelled (for example the task is cancelled or the client
+  disconnects) or the process crashes mid-apply, the row stays `applying`
+  forever: it is never retried and never reset to `pending`. Find such rows
+  with `guard.ledger.list_changes(Status.APPLYING)`, check the remote state,
+  and reconcile by hand.
+* **Network filesystems.** The ledger relies on SQLite WAL mode and
+  `BEGIN IMMEDIATE` locking, which are not safe on network filesystems
+  (NFS, SMB/CIFS). Put the ledger on a local disk; multiple processes must
+  share one host.
 * **Undo is compensation**, not rollback, and can itself fail.
 * **Clocks.** Expiry uses the wall clock (`time.time()`), because the ledger
   is shared across processes. Claims are refused if the clock runs more than
   `max_clock_skew` behind a row's creation; forward jumps expire tokens early.
-* **Retention.** Rows are never deleted automatically.
+* **Retention.** Rows are never deleted automatically, so the ledger grows
+  without bound and keeps payloads and results in clear text. Retention and
+  pruning are on the roadmap (README).

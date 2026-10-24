@@ -52,7 +52,7 @@ $ MCP_CHANGESET_WRITE_MODE=guarded python examples/notes_server.py
 
 ```python
 from mcp.server.mcpserver import MCPServer  # mcp 1.x: from mcp.server.fastmcp import FastMCP
-from mcp_changeset import Guard, Proposal, diff_fields
+from mcp_changeset import ChangeError, Guard, Proposal, diff_fields
 
 server = MCPServer("settings")
 guard = Guard(server, ledger_path="~/.local/state/settings/ledger.db")
@@ -72,6 +72,8 @@ def undo(payload, result):
 @guard.guarded(apply=apply, undo=undo, observe=lambda p: settings.get(p["key"]))
 def set_setting(key: str, value: str) -> Proposal:
     """Change a setting."""  # registered as preview_set_setting
+    if key not in settings:
+        raise ChangeError(f"unknown setting {key!r}")
     return Proposal(
         payload={"key": key, "value": value},
         diff=diff_fields({key: settings[key]}, {key: value}),
@@ -191,8 +193,14 @@ Each change is one row in a SQLite ledger. Every transition is a conditional
   write lock is taken before the row is read) and commits before `apply` is
   called. A concurrent or retried apply, in any process using the same file,
   finds `applying`, `applied` or `apply_failed`. If the process dies mid-apply
-  the row stays `applying` for a person to reconcile; nothing retries a write
-  that may already have happened. This is at-most-once, not exactly-once.
+  or the apply is cancelled (task cancellation, client disconnect), the row
+  stays `applying` and needs manual reconciliation: nothing retries a write
+  that may already have happened, and nothing resets it to `pending`. Find
+  such rows with `guard.ledger.list_changes(Status.APPLYING)`. This is
+  at-most-once, not exactly-once.
+* **Local disk only.** The ledger relies on SQLite WAL mode and
+  `BEGIN IMMEDIATE`, which are not safe on network filesystems (NFS,
+  SMB/CIFS). Processes sharing a ledger must be on the same host.
 * **Tokens.** `confirm_`/`undo_` + `secrets.token_urlsafe(24)` (192 bits). The
   ledger stores only SHA-256 of `(purpose, change_id, payload_hash, token)`
   and compares with `hmac.compare_digest`. Editing a stored payload, or its
@@ -212,7 +220,10 @@ Each change is one row in a SQLite ledger. Every transition is a conditional
   stale; the post-apply state check catches many but not all of those cases.
   `undo_ttl=None` restores the note's behaviour.
 * **Limits.** Proposals above `max_payload_bytes` (default 64 KiB of UTF-8
-  canonical JSON across payload, diff and summary) are refused. Payloads must
+  canonical JSON across payload, diff and summary) are refused. `apply`
+  results above `max_result_bytes` (default 64 KiB) mark the change
+  `apply_failed` without undo, since the write has already happened. These
+  cap single rows; the number of rows is unbounded (no retention yet). Payloads must
   be plain JSON: no NaN/Infinity, no lone surrogates. A clock that reads more
   than `max_clock_skew` (60 s) before a row's creation time refuses claims
   rather than extending a token's life.
@@ -270,7 +281,8 @@ against state that changed in between. It does **not**:
 ```python
 Guard(server, *, ledger_path, ttl=900, undo_ttl=86400, write_mode=None,
       env_var="MCP_CHANGESET_WRITE_MODE", scope=None, prefix="", shared_tools=True,
-      max_payload_bytes=65536, busy_timeout=5.0, max_clock_skew=60.0, clock=time.time)
+      max_payload_bytes=65536, max_result_bytes=65536, busy_timeout=5.0,
+      max_clock_skew=60.0, clock=time.time)
 
 @guard.guarded(apply=..., undo=None, observe=None, name=None, description=None)
 def op(...) -> Proposal: ...          # sync or async; so are apply/undo/observe
@@ -308,8 +320,9 @@ Ideas for v0.2, none of them committed to:
   mark them `apply_failed` after manual reconciliation.
 * **Configurable TTL bounds** instead of the fixed 1–60 min range, and an
   optional maximum for `undo_ttl`.
-* **Retention**: pruning old rows, since payloads and results are stored in
-  clear text.
+* **Retention**: the ledger's row count is currently unbounded. Add
+  age/count-based pruning of terminal rows (`expired`, `applied`, `undone`,
+  failed), since payloads and results are stored in clear text.
 
 ## Development
 
