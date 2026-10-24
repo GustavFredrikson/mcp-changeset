@@ -40,7 +40,8 @@ jobs:
           else
             # examples/elicit_server.py needs mcp 2.x APIs
             uv run --no-sync mypy --python-version ${{ matrix.python }} \
-              src examples/_compat.py examples/todo_server.py examples/notes_server.py
+              src examples/_compat.py examples/todo_server.py examples/notes_server.py \
+              examples/github_labels_server.py
           fi
       - name: Pyright (strict)
         run: uv run --no-sync pyright --pythonversion ${{ matrix.python }}
