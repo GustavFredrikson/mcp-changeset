@@ -40,7 +40,7 @@ mcp-changeset = "mcp_changeset.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/GustavFredrikson/mcp-changeset"
-Source = "https://github.com/GustavFredrikson/mcp-changeset"
+Repository = "https://github.com/GustavFredrikson/mcp-changeset"
 Issues = "https://github.com/GustavFredrikson/mcp-changeset/issues"
 Changelog = "https://github.com/GustavFredrikson/mcp-changeset/blob/main/CHANGELOG.md"
 Design = "https://gustavfredrikson.se/notes/guarded-mcp-writes/"

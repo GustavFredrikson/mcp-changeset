@@ -5,14 +5,13 @@ name: Release
 #   owner GustavFredrikson, repository mcp-changeset,
 #   workflow release.yml, environment pypi.
 #
-# Triggers:
-#   * a published GitHub release whose tag is v<version> -> build, check, publish
-#   * workflow_dispatch -> dry run: build and check only, never publishes
+# Trigger: pushing a tag v<version> (for example v0.1.0) builds, checks and
+# publishes. Nothing else runs this workflow; CI's build job already checks
+# the distributions on every push to main.
 
 on:
-  release:
-    types: [published]
-  workflow_dispatch:
+  push:
+    tags: ["v*"]
 
 permissions:
   contents: read
@@ -35,15 +34,14 @@ jobs:
       - name: Install build tools
         run: python -m pip install --upgrade build twine
       - name: Check that the tag matches the package version
-        if: github.event_name == 'release'
         env:
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ github.ref_name }}
         run: |
           version=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
           module=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' src/mcp_changeset/__init__.py)
           echo "tag=$TAG pyproject=$version __version__=$module"
           if [ "$TAG" != "v$version" ] || [ "$module" != "$version" ]; then
-            echo "::error::release tag $TAG does not match version $version (__version__ $module)"
+            echo "::error::tag $TAG does not match version $version (__version__ $module)"
             exit 1
           fi
       - name: Build sdist and wheel
@@ -64,12 +62,12 @@ jobs:
 
   publish:
     name: Publish to PyPI
-    if: github.event_name == 'release'
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
     environment:
       name: pypi
-      url: https://pypi.org/project/mcp-changeset/
+      url: https://pypi.org/p/mcp-changeset
     permissions:
       id-token: write # mandatory for Trusted Publishing; nothing else is granted
     steps:

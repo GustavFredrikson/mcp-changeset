@@ -10,6 +10,9 @@ All notable changes to this project are documented here. The format follows
 
 - `Guard(write_mode=...)` is annotated as `Literal["guarded", "disabled"] | None`
   instead of `str | None`. Runtime behaviour is unchanged.
+- The release workflow runs when a `v*` tag is pushed (it checks that the tag
+  matches the package version) instead of on a published GitHub release; the
+  manual dry-run trigger is gone, since CI already builds and checks the wheel.
 
 ## [0.1.0] - 2026-10-24
 
