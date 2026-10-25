@@ -57,8 +57,10 @@ $ uv run examples/client_demo.py
 Use it in your own server:
 
 ```console
-$ pip install mcp-changeset   # not on PyPI yet; for now: pip install -e .
+$ pip install mcp-changeset
 ```
+
+For development, install from a clone with `uv sync` (see CONTRIBUTING.md).
 
 ```python
 from mcp.server.mcpserver import MCPServer  # mcp 1.x: from mcp.server.fastmcp import FastMCP

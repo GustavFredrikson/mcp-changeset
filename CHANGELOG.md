@@ -6,15 +6,7 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-### Changed
-
-- `Guard(write_mode=...)` is annotated as `Literal["guarded", "disabled"] | None`
-  instead of `str | None`. Runtime behaviour is unchanged.
-- The release workflow runs when a `v*` tag is pushed (it checks that the tag
-  matches the package version) instead of on a published GitHub release; the
-  manual dry-run trigger is gone, since CI already builds and checks the wheel.
-
-## [0.1.0] - 2026-10-24
+## [0.1.0] - 2026-10-25
 
 First release.
 
@@ -33,7 +25,8 @@ First release.
   24 h, `None` for no expiry); the original design note has no undo expiry.
 - Optional `observe` hook binding approval to observed state at apply and undo.
 - Writes disabled unless `MCP_CHANGESET_WRITE_MODE=guarded` (or
-  `write_mode="guarded"`).
+  `write_mode="guarded"`); `write_mode` is typed
+  `Literal["guarded", "disabled"] | None`.
 - Optional `scope` binding; `0600` ledger file created with `O_NOFOLLOW`
   (symlinks refused); `max_payload_bytes` and `max_result_bytes` limits
   (64 KiB each); refusal on large backward clock jumps; `LedgerError` for busy,
@@ -69,7 +62,8 @@ First release.
 - `docs/security-model.md`: token format and hashing, the single-use claim,
   claim-time checks, state binding and what each ledger column stores.
 - Release workflow for PyPI Trusted Publishing (`.github/workflows/release.yml`,
-  environment `pypi`, no API token); `workflow_dispatch` runs it as a dry run.
+  environment `pypi`, no API token), run by pushing a `v*` tag that matches
+  the package version.
 - CI: 95% coverage gate, the stdio client demo, an install of the built wheel
   with a CLI run, and actionlint on the workflows.
 
