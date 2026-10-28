@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Every tool registered by `Guard` now sets all four MCP annotation hints
+  (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`)
+  explicitly. `apply_change` and `undo_change` are now marked idempotent (a
+  repeated call with the same token is refused and changes nothing).
+  `preview_<op>` is no longer marked read-only, since it records a pending
+  change in the ledger, and is marked open-world because preview and observe
+  functions may read a remote system. Clients that auto-approve only read-only
+  tools will now ask before a preview.
+
 ## [0.1.0] - 2026-10-25
 
 First release.

@@ -41,6 +41,49 @@ MIN_TTL = 60.0
 MAX_TTL = 3600.0
 """Default upper bound for ``ttl`` (seconds); override with ``max_ttl``."""
 
+# MCP tool annotations, all four hints set explicitly on every tool. They are
+# hints for clients, not guarantees. apply/undo/preview/observe are user code,
+# so the open-world hints assume they may call a remote system (as the GitHub
+# example does).
+#
+# preview_<op>: runs the preview and observe functions, which must not change
+#   the target system, then stores a pending change (row + confirmation token)
+#   in the ledger that apply_change later consumes. That ledger write is a real
+#   state change, so the tool is not read-only; it only adds a row, so it is
+#   not destructive. Each call mints a new change_id and token, so it is not
+#   idempotent.
+_PREVIEW_ANNOTATIONS: dict[str, bool] = {
+    "read_only_hint": False,
+    "destructive_hint": False,
+    "idempotent_hint": False,
+    "open_world_hint": True,
+}
+# apply_change: runs the user's apply function, which may overwrite or delete
+# data. The confirmation token is claimed at most once, so repeating a call with
+# the same arguments is refused and has no further effect.
+_APPLY_ANNOTATIONS: dict[str, bool] = {
+    "read_only_hint": False,
+    "destructive_hint": True,
+    "idempotent_hint": True,
+    "open_world_hint": True,
+}
+# undo_change: runs the user's undo function, which reverses an apply (for
+# example deletes what was created or restores overwritten values). The undo
+# token is claimed at most once, like apply's.
+_UNDO_ANNOTATIONS: dict[str, bool] = {
+    "read_only_hint": False,
+    "destructive_hint": True,
+    "idempotent_hint": True,
+    "open_world_hint": True,
+}
+# get_change_status: one read of the local SQLite ledger; calls no user code.
+_STATUS_ANNOTATIONS: dict[str, bool] = {
+    "read_only_hint": True,
+    "destructive_hint": False,
+    "idempotent_hint": True,
+    "open_world_hint": False,
+}
+
 T = TypeVar("T")
 MaybeAwaitable = Union[T, Awaitable[T]]  # noqa: UP007 - runtime alias must work on 3.10
 
@@ -287,13 +330,12 @@ class Guard:
                 preview_tool,
                 name=self.tool_name(f"preview_{action}"),
                 description=(
-                    f"{doc}\n\nPreview only: nothing is changed. Returns a diff, a change_id "
+                    f"{doc}\n\nPreview only: the target is not changed; a pending change is "
+                    f"recorded. Returns a diff, a change_id "
                     f"and a single-use confirmation_token. Show the diff to the user and call "
                     f"{self.tool_name('apply_change')} only after they explicitly approve it."
                 ),
-                annotations=_annotations(
-                    read_only_hint=True, destructive_hint=False, open_world_hint=False
-                ),
+                annotations=_annotations(**_PREVIEW_ANNOTATIONS),
             )
             return fn
 
@@ -318,9 +360,7 @@ class Guard:
                 "Only call this after the user has explicitly approved the diff. Each token "
                 "works once and expires."
             ),
-            annotations=_annotations(
-                read_only_hint=False, destructive_hint=True, idempotent_hint=False
-            ),
+            annotations=_annotations(**_APPLY_ANNOTATIONS),
         )
         self.server.add_tool(
             undo_change,
@@ -329,15 +369,13 @@ class Guard:
                 "Reverse an applied change using the undo_token returned by apply_change. "
                 "Refuses if the affected state changed after the apply."
             ),
-            annotations=_annotations(
-                read_only_hint=False, destructive_hint=True, idempotent_hint=False
-            ),
+            annotations=_annotations(**_UNDO_ANNOTATIONS),
         )
         self.server.add_tool(
             get_change_status,
             name=self.tool_name("get_change_status"),
             description="Report the state of a change. Never returns tokens.",
-            annotations=_annotations(read_only_hint=True),
+            annotations=_annotations(**_STATUS_ANNOTATIONS),
         )
 
     # -- the workflow (also callable from trusted Python) ------------------
