@@ -372,7 +372,8 @@ guard.writes_enabled
 guard.ledger.list_changes(Status.APPLYING)  # e.g. find rows stuck mid-apply
 guard.ledger.expire_stale()
 guard.ledger.reconcile(change_id, note)     # applying/undoing -> *_failed
-guard.ledger.prune(older_than_seconds, include_applied=False, dry_run=False)
+guard.ledger.prune(older_than_seconds=None, *, keep_newest=None, include_applied=False,
+                   dry_run=False)
 Ledger(path, create=False)                  # open an existing ledger (operators)
 ```
 
@@ -395,7 +396,7 @@ one, and never prints tokens). The ledger path comes from `--ledger` or
 $ mcp-changeset list [--status applying] [--json]
 $ mcp-changeset show CHANGE_ID [--json]
 $ mcp-changeset reconcile CHANGE_ID --note "what you checked" [--yes]
-$ mcp-changeset prune --older-than-days 30 [--include-applied] [--yes]
+$ mcp-changeset prune [--older-than-days 30] [--keep-newest N] [--include-applied] [--yes]
 $ mcp-changeset expire [--yes]
 ```
 
@@ -412,6 +413,11 @@ deletes `pending`, `applying` or `undoing` rows; a stale preview stays
 every pending row past its TTL into `expired` and make it prunable. Schedule it (cron, systemd
 timer) if the server runs for long.
 
+`--keep-newest N` bounds the ledger by count: the N most recently updated rows
+(of any status, so pending and applying rows use up slots) are never deleted.
+Alone it keeps N rows plus whatever is not yet prunable; with
+`--older-than-days` a row must satisfy both conditions to be deleted.
+
 ## Roadmap
 
 Ideas, none of them committed to:
@@ -419,8 +425,6 @@ Ideas, none of them committed to:
 * **Approval via the user, built in.** A helper that registers the
   elicitation-backed `apply_change` from the composition above, so the token
   can stay server-side.
-* **Count-based retention** (keep the newest N rows) next to the age-based
-  `prune`.
 * **Optional payload redaction** in the ledger for fields operators should not
   be able to read.
 

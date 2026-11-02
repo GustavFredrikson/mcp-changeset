@@ -509,36 +509,64 @@ class Ledger:
         return self.get(change_id)
 
     def prune(
-        self, older_than: float, *, include_applied: bool = False, dry_run: bool = False
+        self,
+        older_than: float | None = None,
+        *,
+        keep_newest: int | None = None,
+        include_applied: bool = False,
+        dry_run: bool = False,
     ) -> int:
-        """Delete finished changes last updated more than ``older_than`` seconds ago.
+        """Delete finished changes by age, by count, or both.
+
+        ``older_than`` (seconds): only rows last updated more than that long
+        ago are deleted. ``keep_newest`` (a count): the ``keep_newest`` most
+        recently updated rows of the whole ledger, whatever their status, are
+        never deleted (ties are broken by insertion order). At least one of the
+        two is required; if both are given, a row must satisfy both to be
+        deleted.
 
         Always eligible: ``expired``, ``apply_failed``, ``undone``,
         ``undo_failed``. With ``include_applied=True``, ``applied`` changes are
         eligible too, but only once they can no longer be undone (no undo, or
         the undo window has closed); rows with a never-expiring undo window are
-        kept. ``pending``, ``applying`` and ``undoing`` rows are never deleted.
+        kept. ``pending``, ``applying`` and ``undoing`` rows are never deleted,
+        but they do count towards ``keep_newest``.
         Returns the number of deleted rows (with ``dry_run=True``, the number
         that would be deleted; nothing is changed).
         """
-        if older_than < 0:
+        if older_than is None and keep_newest is None:
+            raise ValueError("prune needs older_than, keep_newest, or both")
+        if older_than is not None and older_than < 0:
             raise ValueError("older_than must be >= 0")
+        if keep_newest is not None and keep_newest < 0:
+            raise ValueError("keep_newest must be >= 0")
         now = self._clock()
-        cutoff = now - older_than
         finished = (
             Status.EXPIRED.value,
             Status.APPLY_FAILED.value,
             Status.UNDONE.value,
             Status.UNDO_FAILED.value,
         )
-        where = "updated_at < ? AND status IN (?, ?, ?, ?)"
-        params: tuple[Any, ...] = (cutoff, *finished)
-        if include_applied:
-            where = (
-                f"({where}) OR (updated_at < ? AND status = ? AND "
-                "(undoable = 0 OR (undo_expires_at IS NOT NULL AND undo_expires_at <= ?)))"
+        # Conditions every eligible row must also meet (age and/or count).
+        extra = ""
+        extra_params: tuple[Any, ...] = ()
+        if older_than is not None:
+            extra += " AND updated_at < ?"
+            extra_params += (now - older_than,)
+        if keep_newest is not None:
+            extra += (
+                " AND change_id NOT IN (SELECT change_id FROM changes "
+                "ORDER BY updated_at DESC, rowid DESC LIMIT ?)"
             )
-            params += (cutoff, Status.APPLIED.value, now)
+            extra_params += (keep_newest,)
+        where = f"(status IN (?, ?, ?, ?){extra})"
+        params: tuple[Any, ...] = (*finished, *extra_params)
+        if include_applied:
+            where += (
+                " OR (status = ? AND (undoable = 0 OR "
+                f"(undo_expires_at IS NOT NULL AND undo_expires_at <= ?)){extra})"
+            )
+            params += (Status.APPLIED.value, now, *extra_params)
         verb = "SELECT COUNT(*) FROM" if dry_run else "DELETE FROM"
         with self._immediate() as conn:
             # `where` is assembled from constants above; values are bound.

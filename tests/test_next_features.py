@@ -295,3 +295,92 @@ def test_create_false_rejects_symlink(tmp_path):
     (tmp_path / "link.db").symlink_to(real)
     with pytest.raises(LedgerError, match="symlink"):
         Ledger(tmp_path / "link.db", create=False)
+
+
+async def test_prune_keep_newest_counts_every_status(make, clock):
+    guard, ids = await _one_of_each(make, clock)
+    assert len(guard.ledger.list_changes()) == 5
+    # Five rows in total: a count that covers them all deletes nothing, and
+    # keep_newest=0 deletes exactly the eligible ones (2 expired + undone).
+    assert guard.ledger.prune(keep_newest=5) == 0
+    assert guard.ledger.prune(keep_newest=0, dry_run=True) == 3
+    assert len(guard.ledger.list_changes()) == 5
+    assert guard.ledger.prune(keep_newest=0) == 3
+    left = {r.change_id for r in guard.ledger.list_changes()}
+    assert left == {ids["applied"], ids["applying"]}
+
+
+async def test_prune_keep_newest_keeps_the_most_recent_finished_rows(make, clock):
+    _, guard = make()
+    ids = []
+    for i in range(4):
+        p = await guard.preview("create_todo", title=f"t{i}")
+        ids.append(p["change_id"])
+        clock.advance(1)
+    clock.advance(guard.ttl)
+    guard.ledger.expire_stale()  # all four expired at the same instant
+    # Same updated_at: insertion order breaks the tie, so the last two survive.
+    assert guard.ledger.prune(keep_newest=2) == 2
+    assert {r.change_id for r in guard.ledger.list_changes()} == set(ids[2:])
+
+
+async def test_prune_keep_newest_pending_rows_use_up_slots(make, clock):
+    _, guard = make()
+    a = await guard.preview("create_todo", title="a")
+    clock.advance(guard.ttl)
+    guard.ledger.expire_stale()  # a -> expired
+    clock.advance(1)
+    b = await guard.preview("create_todo", title="b")  # newest row, still pending
+    # keep_newest=1 is spent on the pending row, so the expired one goes.
+    assert guard.ledger.prune(keep_newest=1) == 1
+    assert [r.change_id for r in guard.ledger.list_changes()] == [b["change_id"]]
+    assert a["change_id"] not in {r.change_id for r in guard.ledger.list_changes()}
+
+
+async def test_prune_keep_newest_and_older_than_must_both_hold(make, clock):
+    _, guard = make()
+    ids = []
+    for i in range(3):
+        p = await guard.preview("create_todo", title=f"t{i}")
+        ids.append(p["change_id"])
+        clock.advance(guard.ttl)
+        guard.ledger.expire_stale()  # t0, t1, t2 expire one TTL apart
+    clock.advance(10)
+    age = guard.ttl + 5  # only rows expired more than ~one TTL ago qualify by age
+    assert guard.ledger.prune(age, keep_newest=0, dry_run=True) == 2
+    assert guard.ledger.prune(age, keep_newest=1, dry_run=True) == 2
+    assert guard.ledger.prune(age, keep_newest=2, dry_run=True) == 1
+    assert guard.ledger.prune(age, keep_newest=2) == 1
+    assert {r.change_id for r in guard.ledger.list_changes()} == set(ids[1:])
+
+
+async def test_prune_keep_newest_with_include_applied(make, clock):
+    _, guard = make(undo_ttl=10)
+    ids = []
+    for i in range(3):
+        p = await guard.preview("create_todo", title=f"t{i}")
+        await guard.apply(p["change_id"], p["confirmation_token"])
+        ids.append(p["change_id"])
+        clock.advance(1)
+    clock.advance(100)  # every undo window has closed
+    assert guard.ledger.prune(keep_newest=1) == 0  # applied rows need include_applied
+    assert guard.ledger.prune(keep_newest=1, include_applied=True) == 2
+    assert [r.change_id for r in guard.ledger.list_changes()] == [ids[2]]
+
+
+async def test_prune_keep_newest_include_applied_still_respects_undo_window(make, clock):
+    _, guard = make(undo_ttl=10 * 86400)
+    p = await guard.preview("create_todo", title="x")
+    await guard.apply(p["change_id"], p["confirmation_token"])
+    clock.advance(86400)
+    assert guard.ledger.prune(keep_newest=0, include_applied=True) == 0
+
+
+def test_prune_needs_an_age_or_a_count(tmp_path):
+    with pytest.raises(ValueError, match="older_than, keep_newest"):
+        Ledger(tmp_path / "l.db").prune()
+
+
+def test_prune_rejects_negative_keep_newest(tmp_path):
+    with pytest.raises(ValueError, match="keep_newest"):
+        Ledger(tmp_path / "l.db").prune(keep_newest=-1)

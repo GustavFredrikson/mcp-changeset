@@ -145,8 +145,10 @@ $ mcp-changeset prune --older-than-days 30 --yes
 ```
 
 From Python, the same operations are `Ledger.reconcile(change_id, note)` and
-`Ledger.prune(older_than_seconds, include_applied=False, dry_run=False)`.
-Pruning never touches `pending`, `applying` or `undoing` rows, and only deletes
+`Ledger.prune(older_than_seconds=None, *, keep_newest=None, include_applied=False, dry_run=False)`.
+At least one of `older_than_seconds` and `keep_newest` is required;
+`keep_newest=N` (CLI: `--keep-newest N`) never deletes the N most recently
+updated rows, and combined with an age a row must satisfy both. Pruning never touches `pending`, `applying` or `undoing` rows, and only deletes
 `applied` rows with `include_applied=True` once they can no longer be undone.
 
 ```python

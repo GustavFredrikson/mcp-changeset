@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Count-based retention: `Ledger.prune(keep_newest=N)` and
+  `mcp-changeset prune --keep-newest N` never delete the N most recently
+  updated rows. `older_than` / `--older-than-days` is now optional (one of the
+  two is required); with both, a row must satisfy both to be deleted.
+
 ### Changed
 
 - Every tool registered by `Guard` now sets all four MCP annotation hints
