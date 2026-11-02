@@ -3,7 +3,8 @@
     mcp-changeset --ledger PATH list [--status applying] [--json]
     mcp-changeset --ledger PATH show CHANGE_ID [--json]
     mcp-changeset --ledger PATH reconcile CHANGE_ID --note "checked remote: not written" --yes
-    mcp-changeset --ledger PATH prune --older-than-days 30 [--include-applied] --yes
+    mcp-changeset --ledger PATH prune [--older-than-days 30] [--keep-newest N] \\
+        [--include-applied] --yes
     mcp-changeset --ledger PATH expire --yes
 
 Commands that change the ledger do nothing without ``--yes``; they print what
@@ -80,7 +81,16 @@ def _build_parser() -> argparse.ArgumentParser:
     rec.add_argument("--yes", action="store_true", help="actually change the ledger")
 
     prune = sub.add_parser("prune", help="delete old finished changes")
-    prune.add_argument("--older-than-days", type=float, required=True)
+    prune.add_argument(
+        "--older-than-days", type=float, help="only delete rows last updated before this"
+    )
+    prune.add_argument(
+        "--keep-newest",
+        type=int,
+        metavar="N",
+        help="never delete the N most recently updated rows (any status); "
+        "combined with --older-than-days a row must satisfy both",
+    )
     prune.add_argument(
         "--include-applied",
         action="store_true",
@@ -166,8 +176,15 @@ def main(argv: Sequence[str] | None = None, *, out: TextIO | None = None) -> int
             out.write(f"expired {ledger.expire_stale()} change(s).\n")
             return EXIT_OK
         # prune
-        seconds = args.older_than_days * 86400
-        count = ledger.prune(seconds, include_applied=args.include_applied, dry_run=not args.yes)
+        if args.older_than_days is None and args.keep_newest is None:
+            parser.error("prune needs --older-than-days, --keep-newest, or both")
+        seconds = None if args.older_than_days is None else args.older_than_days * 86400
+        count = ledger.prune(
+            seconds,
+            keep_newest=args.keep_newest,
+            include_applied=args.include_applied,
+            dry_run=not args.yes,
+        )
         if not args.yes:
             out.write(f"would delete {count} change(s); re-run with --yes to delete.\n")
             return EXIT_NEEDS_CONFIRMATION

@@ -146,3 +146,41 @@ def test_console_script_entry_point(tmp_path):
         check=False,
     )
     assert proc.returncode == 0 and proc.stdout.startswith("CHANGE_ID")
+
+
+async def test_prune_keep_newest(populated, clock):
+    guard = populated["guard"]
+    clock.advance(guard.ttl)
+    guard.ledger.expire_stale()  # the pending preview is now expired (and prunable)
+    code, text = run("--ledger", populated["ledger"], "prune", "--keep-newest", "3")
+    assert code == 2 and "would delete 0 change(s)" in text  # 3 rows, 3 kept
+    code, text = run("--ledger", populated["ledger"], "prune", "--keep-newest", "0")
+    assert code == 2 and "would delete 1 change(s)" in text
+    assert len(guard.ledger.list_changes()) == 3
+    code, text = run("--ledger", populated["ledger"], "prune", "--keep-newest", "0", "--yes")
+    assert code == 0 and "deleted 1 change(s)" in text
+    assert {r.status for r in guard.ledger.list_changes()} == {Status.APPLIED, Status.APPLYING}
+
+
+async def test_prune_keep_newest_with_older_than(populated, clock):
+    guard = populated["guard"]
+    clock.advance(guard.ttl)
+    guard.ledger.expire_stale()  # updated ~100 days ago (real time)
+    args = ("--ledger", populated["ledger"], "prune", "--keep-newest", "0")
+    code, text = run(*args, "--older-than-days", "1000")
+    assert code == 2 and "would delete 0 change(s)" in text  # not old enough
+    code, text = run(*args, "--older-than-days", "30", "--yes")
+    assert code == 0 and "deleted 1 change(s)" in text
+
+
+async def test_prune_needs_age_or_count(populated, capsys):
+    with pytest.raises(SystemExit) as exc:
+        run("--ledger", populated["ledger"], "prune")
+    assert exc.value.code == 2
+    assert "--older-than-days, --keep-newest" in capsys.readouterr().err
+    assert len(populated["guard"].ledger.list_changes()) == 3
+
+
+async def test_prune_rejects_negative_keep_newest(populated, capsys):
+    code, _ = run("--ledger", populated["ledger"], "prune", "--keep-newest", "-1")
+    assert code == 1 and "keep_newest" in capsys.readouterr().err
